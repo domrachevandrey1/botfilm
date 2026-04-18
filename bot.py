@@ -1,6 +1,6 @@
 """
 🎬 @PosmotriBot — рекомендации фильмов и сериалов
-Groq (бесплатно) + SubGram (монетизация, опционально)
+Groq (бесплатно) + SubGram (монетизация)
 """
 
 import os
@@ -14,7 +14,7 @@ log = logging.getLogger(__name__)
 
 TELEGRAM_TOKEN  = os.environ["TELEGRAM_TOKEN"]
 GROQ_API_KEY    = os.environ["GROQ_API_KEY"]
-SUBGRAM_API_KEY = os.environ.get("SUBGRAM_API_KEY", "")  # Необязательный
+SUBGRAM_API_KEY = os.environ.get("SUBGRAM_API_KEY", "")
 
 TG_API      = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}"
 SUBGRAM_URL = "https://api.subgram.org/get-sponsors"
@@ -24,6 +24,7 @@ client = Groq(api_key=GROQ_API_KEY)
 
 def check_subgram(user_id: int, chat_id: int) -> str:
     if not SUBGRAM_API_KEY:
+        log.info("SubGram: ключ не задан, пропускаем")
         return "ok"
     try:
         resp = requests.post(
@@ -32,7 +33,9 @@ def check_subgram(user_id: int, chat_id: int) -> str:
             json={"user_id": user_id, "chat_id": chat_id},
             timeout=10,
         )
-        return resp.json().get("status", "error")
+        data = resp.json()
+        log.info(f"SubGram ответ: {data}")  # видим что возвращает SubGram
+        return data.get("status", "error")
     except Exception as e:
         log.warning(f"SubGram error: {e}")
         return "error"
@@ -109,7 +112,10 @@ def handle_message(chat_id: int, user_id: int, text: str):
         return
 
     status = check_subgram(user_id, chat_id)
+    log.info(f"SubGram статус для {user_id}: {status}")
+
     if status == "warning":
+        # SubGram сам отправил блок с подпиской
         return
 
     if cmd == "/start":
@@ -122,6 +128,7 @@ def handle_message(chat_id: int, user_id: int, text: str):
 
 def main():
     log.info("🎬 @PosmotriBot запущен!")
+    log.info(f"SubGram: {'подключён' if SUBGRAM_API_KEY else 'НЕ подключён'}")
     offset = 0
     while True:
         for update in get_updates(offset):
@@ -132,6 +139,7 @@ def main():
                 user_id = msg.get("from", {}).get("id")
                 text    = msg.get("text", "")
                 if chat_id and user_id and text:
+                    log.info(f"Сообщение от {user_id}: {text[:60]}")
                     handle_message(chat_id, user_id, text)
             except Exception as e:
                 log.error(f"Ошибка: {e}")
