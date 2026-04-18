@@ -34,7 +34,12 @@ def check_subgram(user_id: int, chat_id: int) -> str:
             timeout=10,
         )
         data = resp.json()
-        log.info(f"SubGram ответ: {data}")  # видим что возвращает SubGram
+        log.info(f"SubGram ответ: {data}")
+
+        # Проверяем code — 400 означает что пользователь не подписан
+        if data.get("code") == 400:
+            return "warning"
+
         return data.get("status", "error")
     except Exception as e:
         log.warning(f"SubGram error: {e}")
