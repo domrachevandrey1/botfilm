@@ -1,6 +1,6 @@
 """
 🎬 @PosmotriBot — рекомендации фильмов и сериалов
-Groq (бесплатно) + SubGram (монетизация)
+Groq (бесплатно) + SubGram (монетизация, опционально)
 """
 
 import os
@@ -14,14 +14,17 @@ log = logging.getLogger(__name__)
 
 TELEGRAM_TOKEN  = os.environ["TELEGRAM_TOKEN"]
 GROQ_API_KEY    = os.environ["GROQ_API_KEY"]
-SUBGRAM_API_KEY = os.environ["SUBGRAM_API_KEY"]
+SUBGRAM_API_KEY = os.environ.get("SUBGRAM_API_KEY", "")  # Необязательный
 
 TG_API      = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}"
 SUBGRAM_URL = "https://api.subgram.org/get-sponsors"
 
 client = Groq(api_key=GROQ_API_KEY)
 
+
 def check_subgram(user_id: int, chat_id: int) -> str:
+    if not SUBGRAM_API_KEY:
+        return "ok"
     try:
         resp = requests.post(
             SUBGRAM_URL,
@@ -29,30 +32,27 @@ def check_subgram(user_id: int, chat_id: int) -> str:
             json={"user_id": user_id, "chat_id": chat_id},
             timeout=10,
         )
-        data = resp.json()
-        return data.get("status", "error")
+        return resp.json().get("status", "error")
     except Exception as e:
         log.warning(f"SubGram error: {e}")
         return "error"
 
-SYSTEM_PROMPT = """Ты — дружелюбный кино-эксперт в Telegram. Помогаешь людям выбрать что посмотреть.
 
-Правила:
+SYSTEM_PROMPT = """Ты — дружелюбный кино-эксперт в Telegram. Помогаешь людям выбрать что посмотреть.
 - Отвечай только на русском языке
-- Предлагай 3–5 конкретных фильмов или сериалов под запрос
+- Предлагай 3–5 фильмов или сериалов под запрос
 - Для каждого: название (год) — одна яркая фраза почему стоит смотреть
-- Используй эмодзи, но без фанатизма
-- Если пользователь написал что-то не про кино — мягко верни к теме
+- Используй эмодзи умеренно
 - Стиль: живой и тёплый, как совет другу"""
 
 
-def get_recommendations(user_text: str) -> str:
+def get_recommendations(text: str) -> str:
     response = client.chat.completions.create(
         model="llama-3.3-70b-versatile",
         max_tokens=800,
         messages=[
             {"role": "system", "content": SYSTEM_PROMPT},
-            {"role": "user",   "content": user_text},
+            {"role": "user",   "content": text},
         ],
     )
     return response.choices[0].message.content.strip()
@@ -69,7 +69,7 @@ def send_typing(chat_id: int):
                   json={"chat_id": chat_id, "action": "typing"}, timeout=5)
 
 
-def get_updates(offset: int = 0) -> list[dict]:
+def get_updates(offset: int = 0) -> list:
     try:
         r = requests.get(f"{TG_API}/getUpdates",
                          params={"offset": offset, "timeout": 30}, timeout=35)
@@ -86,21 +86,17 @@ WELCOME = """🎬 <b>Привет! Я @PosmotriBot.</b>
 • <i>«хочу что-то страшное»</i>
 • <i>«комедия на вечер с друзьями»</i>
 • <i>«что-то вроде Игры Престолов»</i>
-• <i>«документалки про природу»</i>
 • <i>«хочу поплакать»</i>
 
 Просто напиши — и я помогу! 🍿"""
 
 HELP = """🆘 <b>Как пользоваться:</b>
 
-Опиши настроение или предпочтения обычным текстом:
+Опиши настроение или предпочтения:
+🎭 <i>«триллер», «мелодрама», «аниме»</i>
+😊 <i>«хочу поднять настроение»</i>
+🎬 <i>«что-то вроде Интерстеллара»</i>
 
-🎭 По жанру: <i>«триллер», «мелодрама», «аниме»</i>
-😊 По настроению: <i>«хочу поднять настроение»</i>
-🎬 По похожему: <i>«что-то вроде Интерстеллара»</i>
-⭐ По теме: <i>«про войну», «про космос»</i>
-
-Команды:
 /start — начало
 /help — эта справка"""
 
@@ -112,26 +108,23 @@ def handle_message(chat_id: int, user_id: int, text: str):
         send_message(chat_id, HELP)
         return
 
-    # Проверяем подписку через SubGram
     status = check_subgram(user_id, chat_id)
     if status == "warning":
-        return  # SubGram сам отправил блок с подпиской
+        return
 
     if cmd == "/start":
         send_message(chat_id, WELCOME)
         return
 
     send_typing(chat_id)
-    reply = get_recommendations(text.strip())
-    send_message(chat_id, reply)
+    send_message(chat_id, get_recommendations(text.strip()))
 
 
 def main():
     log.info("🎬 @PosmotriBot запущен!")
     offset = 0
     while True:
-        updates = get_updates(offset)
-        for update in updates:
+        for update in get_updates(offset):
             offset = update["update_id"] + 1
             try:
                 msg     = update.get("message", {})
@@ -139,7 +132,6 @@ def main():
                 user_id = msg.get("from", {}).get("id")
                 text    = msg.get("text", "")
                 if chat_id and user_id and text:
-                    log.info(f"[{user_id}] {text[:60]}")
                     handle_message(chat_id, user_id, text)
             except Exception as e:
                 log.error(f"Ошибка: {e}")
