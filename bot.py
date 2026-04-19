@@ -24,7 +24,6 @@ client = Groq(api_key=GROQ_API_KEY)
 
 def check_subgram(user_id: int, chat_id: int) -> str:
     if not SUBGRAM_API_KEY:
-        log.info("SubGram: ключ не задан, пропускаем")
         return "ok"
     try:
         resp = requests.post(
@@ -35,11 +34,6 @@ def check_subgram(user_id: int, chat_id: int) -> str:
         )
         data = resp.json()
         log.info(f"SubGram ответ: {data}")
-
-        # Проверяем code — 400 означает что пользователь не подписан
-        if data.get("code") == 400:
-            return "warning"
-
         return data.get("status", "error")
     except Exception as e:
         log.warning(f"SubGram error: {e}")
@@ -72,6 +66,12 @@ def send_message(chat_id: int, text: str):
     }, timeout=10)
 
 
+def answer_callback(callback_id: str, text: str = ""):
+    requests.post(f"{TG_API}/answerCallbackQuery", json={
+        "callback_query_id": callback_id, "text": text,
+    }, timeout=5)
+
+
 def send_typing(chat_id: int):
     requests.post(f"{TG_API}/sendChatAction",
                   json={"chat_id": chat_id, "action": "typing"}, timeout=5)
@@ -80,7 +80,9 @@ def send_typing(chat_id: int):
 def get_updates(offset: int = 0) -> list:
     try:
         r = requests.get(f"{TG_API}/getUpdates",
-                         params={"offset": offset, "timeout": 30}, timeout=35)
+                         params={"offset": offset, "timeout": 30,
+                                 "allowed_updates": ["message", "callback_query"]},
+                         timeout=35)
         return r.json().get("result", [])
     except Exception:
         return []
@@ -117,11 +119,8 @@ def handle_message(chat_id: int, user_id: int, text: str):
         return
 
     status = check_subgram(user_id, chat_id)
-    log.info(f"SubGram статус для {user_id}: {status}")
-
     if status == "warning":
-        # SubGram сам отправил блок с подпиской
-        return
+        return  # SubGram сам показал блок подписки
 
     if cmd == "/start":
         send_message(chat_id, WELCOME)
@@ -129,6 +128,17 @@ def handle_message(chat_id: int, user_id: int, text: str):
 
     send_typing(chat_id)
     send_message(chat_id, get_recommendations(text.strip()))
+
+
+def handle_callback(callback_id: str, chat_id: int, user_id: int, data: str):
+    # Обработка кнопки "Я выполнил" от SubGram
+    if data == "subgram-op":
+        answer_callback(callback_id, "⏳ Проверяем подписки...")
+        status = check_subgram(user_id, chat_id)
+        if status == "warning":
+            return  # Ещё не подписался
+        # Подписался — даём доступ
+        send_message(chat_id, WELCOME)
 
 
 def main():
@@ -139,13 +149,26 @@ def main():
         for update in get_updates(offset):
             offset = update["update_id"] + 1
             try:
-                msg     = update.get("message", {})
-                chat_id = msg.get("chat", {}).get("id")
-                user_id = msg.get("from", {}).get("id")
-                text    = msg.get("text", "")
-                if chat_id and user_id and text:
-                    log.info(f"Сообщение от {user_id}: {text[:60]}")
-                    handle_message(chat_id, user_id, text)
+                # Обычное сообщение
+                if "message" in update:
+                    msg     = update["message"]
+                    chat_id = msg.get("chat", {}).get("id")
+                    user_id = msg.get("from", {}).get("id")
+                    text    = msg.get("text", "")
+                    if chat_id and user_id and text:
+                        log.info(f"Сообщение от {user_id}: {text[:60]}")
+                        handle_message(chat_id, user_id, text)
+
+                # Нажатие кнопки (callback)
+                elif "callback_query" in update:
+                    cb      = update["callback_query"]
+                    cb_id   = cb["id"]
+                    user_id = cb["from"]["id"]
+                    chat_id = cb["message"]["chat"]["id"]
+                    data    = cb.get("data", "")
+                    log.info(f"Callback от {user_id}: {data}")
+                    handle_callback(cb_id, chat_id, user_id, data)
+
             except Exception as e:
                 log.error(f"Ошибка: {e}")
         time.sleep(1)
